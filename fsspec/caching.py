@@ -46,11 +46,16 @@ class BaseCache:
 
     def _reset_stats(self) -> None:
         """Reset hit and miss counts for a more ganular report e.g. by file."""
-        pass
+        self.hit_count = 0
+        self.miss_count = 0
+        self.total_requested_bytes = 0
 
     def _log_stats(self) -> str:
         """Return a formatted string of the cache statistics."""
-        pass
+        return (f"Cache statistics:\n"
+                f"  Hits: {self.hit_count}\n"
+                f"  Misses: {self.miss_count}\n"
+                f"  Total requested bytes: {self.total_requested_bytes}")
 
     def __repr__(self) -> str:
         return f'\n        <{self.__class__.__name__}:\n            block size  :   {self.blocksize}\n            block count :   {self.nblocks}\n            file size   :   {self.size}\n            cache hits  :   {self.hit_count}\n            cache misses:   {self.miss_count}\n            total requested bytes: {self.total_requested_bytes}>\n        '
@@ -148,7 +153,7 @@ class BlockCache(BaseCache):
         NamedTuple
             Returned directly from the LRU Cache used internally.
         """
-        pass
+        return self._fetch_block_cached.cache_info()
 
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__
@@ -163,7 +168,11 @@ class BlockCache(BaseCache):
         """
         Fetch the block of data for `block_number`.
         """
-        pass
+        start = block_number * self.blocksize
+        end = min(start + self.blocksize, self.size)
+        self.miss_count += 1
+        self.total_requested_bytes += end - start
+        return self.fetcher(start, end)
 
     def _read_cache(self, start: int, end: int, start_block_number: int, end_block_number: int) -> bytes:
         """
@@ -176,7 +185,21 @@ class BlockCache(BaseCache):
         start_block_number, end_block_number : int
             The start and end block numbers.
         """
-        pass
+        if start_block_number == end_block_number:
+            block = self._fetch_block_cached(start_block_number)
+            return block[start % self.blocksize : end % self.blocksize or None]
+        
+        result = []
+        for block_number in range(start_block_number, end_block_number + 1):
+            block = self._fetch_block_cached(block_number)
+            if block_number == start_block_number:
+                result.append(block[start % self.blocksize:])
+            elif block_number == end_block_number:
+                result.append(block[:end % self.blocksize or None])
+            else:
+                result.append(block)
+        
+        return b''.join(result)
 
 class BytesCache(BaseCache):
     """Cache which holds data in a in-memory bytes object
@@ -340,7 +363,7 @@ class BackgroundBlockCache(BaseCache):
         NamedTuple
             Returned directly from the LRU Cache used internally.
         """
-        pass
+        return self._fetch_block_cached.cache_info()
 
     def __getstate__(self) -> dict[str, Any]:
         state = self.__dict__
@@ -363,7 +386,20 @@ class BackgroundBlockCache(BaseCache):
         """
         Fetch the block of data for `block_number`.
         """
-        pass
+        start = block_number * self.blocksize
+        end = min(start + self.blocksize, self.size)
+        self.miss_count += 1
+        self.total_requested_bytes += end - start
+        data = self.fetcher(start, end)
+        
+        # Pre-fetch next block in background
+        with self._fetch_future_lock:
+            next_block = block_number + 1
+            if next_block < self.nblocks and next_block not in self._fetch_block_cached._cache:
+                self._fetch_future_block_number = next_block
+                self._fetch_future = self._thread_executor.submit(self._fetch_block, next_block, 'async')
+        
+        return data
 
     def _read_cache(self, start: int, end: int, start_block_number: int, end_block_number: int) -> bytes:
         """
@@ -376,7 +412,25 @@ class BackgroundBlockCache(BaseCache):
         start_block_number, end_block_number : int
             The start and end block numbers.
         """
-        pass
+        result = []
+        for block_number in range(start_block_number, end_block_number + 1):
+            with self._fetch_future_lock:
+                if self._fetch_future_block_number == block_number and self._fetch_future:
+                    block = self._fetch_future.result()
+                    self._fetch_block_cached._cache[block_number] = block
+                    self._fetch_future_block_number = None
+                    self._fetch_future = None
+                else:
+                    block = self._fetch_block_cached(block_number)
+            
+            if block_number == start_block_number:
+                result.append(block[start % self.blocksize:])
+            elif block_number == end_block_number:
+                result.append(block[:end % self.blocksize or None])
+            else:
+                result.append(block)
+        
+        return b''.join(result)
 caches: dict[str | None, type[BaseCache]] = {None: BaseCache}
 
 def register_cache(cls: type[BaseCache], clobber: bool=False) -> None:
@@ -392,6 +446,8 @@ def register_cache(cls: type[BaseCache], clobber: bool=False) -> None:
     ------
     ValueError
     """
-    pass
+    if cls.name in caches and not clobber:
+        raise ValueError(f"Cache {cls.name} already registered. Use clobber=True to overwrite.")
+    caches[cls.name] = cls
 for c in (BaseCache, MMapCache, BytesCache, ReadAheadCache, BlockCache, FirstChunkCache, AllBytes, KnownPartsOfAFile, BackgroundBlockCache):
     register_cache(c)
