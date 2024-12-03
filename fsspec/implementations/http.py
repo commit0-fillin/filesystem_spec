@@ -77,14 +77,16 @@ class HTTPFileSystem(AsyncFileSystem):
     @classmethod
     def _strip_protocol(cls, path):
         """For HTTP, we always want to keep the full URL"""
-        pass
+        return path
     ls = sync_wrapper(_ls)
 
     def _raise_not_found_for_status(self, response, url):
         """
         Raises FileNotFoundError for 404s, otherwise uses raise_for_status.
         """
-        pass
+        if response.status_code == 404:
+            raise FileNotFoundError(f"{url} not found")
+        response.raise_for_status()
 
     def _open(self, path, mode='rb', block_size=None, autocommit=None, cache_type=None, cache_options=None, size=None, **kwargs):
         """Make a file-like object
@@ -101,11 +103,19 @@ class HTTPFileSystem(AsyncFileSystem):
         kwargs: key-value
             Any other parameters, passed to requests calls
         """
-        pass
+        if mode != 'rb':
+            raise NotImplementedError("Only 'rb' mode is supported for HTTP")
+        block_size = block_size or self.block_size
+        url = self.encode_url(path)
+        if block_size == 0:
+            return HTTPStreamFile(self, url, mode=mode, block_size=block_size, **kwargs)
+        else:
+            return HTTPFile(self, url, mode=mode, block_size=block_size, cache_type=cache_type,
+                            cache_options=cache_options, size=size, **kwargs)
 
     def ukey(self, url):
         """Unique identifier; assume HTTP files are static, unchanging"""
-        pass
+        return tokenize(url)
 
     async def _info(self, url, **kwargs):
         """Get info of URL
@@ -117,17 +127,37 @@ class HTTPFileSystem(AsyncFileSystem):
         which case size will be given as None (and certain operations on the
         corresponding file will not work).
         """
-        pass
+        session = await self.set_session()
+        try:
+            r = await session.head(url, **self.kwargs)
+            size = int(r.headers['Content-Length'])
+        except (AttributeError, KeyError, ValueError):
+            r = await session.get(url, **self.kwargs)
+            if 'Content-Length' in r.headers:
+                size = int(r.headers['Content-Length'])
+            elif r.headers.get('Accept-Ranges', None) == 'none':
+                size = None
+            else:
+                size = None
+        except Exception as e:
+            raise FileNotFoundError(url) from e
+
+        return {'name': url, 'size': size, 'type': 'file'}
 
     async def _glob(self, path, maxdepth=None, **kwargs):
         """
         Find files by glob-matching.
 
-        This implementation is idntical to the one in AbstractFileSystem,
+        This implementation is identical to the one in AbstractFileSystem,
         but "?" is not considered as a character for globbing, because it is
         so common in URLs, often identifying the "query" part.
         """
-        pass
+        import re
+        from fsspec.spec import AbstractFileSystem
+        
+        pattern = re.compile(glob_translate(path).replace(r'\?', '?'))
+        out = await AbstractFileSystem._glob(self, path, maxdepth=maxdepth, **kwargs)
+        return [o for o in out if pattern.match(o)]
 
 class HTTPFile(AbstractBufferedFile):
     """
@@ -174,7 +204,19 @@ class HTTPFile(AbstractBufferedFile):
             file. If the server has not supplied the filesize, attempting to
             read only part of the data will raise a ValueError.
         """
-        pass
+        if self.closed:
+            raise ValueError("I/O operation on closed file.")
+        if length < 0:
+            self.cache = self._fetch_all()
+        else:
+            if self.start is None and self.end is None:
+                self.start = 0
+                self.end = self.blocksize
+            if self.end is None or length > (self.end - self.loc):
+                self.cache = self._fetch_range(self.loc, self.loc + length)
+        data = self.cache[self.loc - self.start:self.loc - self.start + length]
+        self.loc += len(data)
+        return data
 
     async def async_fetch_all(self):
         """Read whole file in one shot, without caching
@@ -182,12 +224,24 @@ class HTTPFile(AbstractBufferedFile):
         This is only called when position is still at zero,
         and read() is called without a byte-count.
         """
-        pass
+        if self.size is None:
+            raise ValueError("Cannot read entire file of unknown size")
+        self.start = 0
+        self.end = self.size
+        r = await self.session.get(self.url, **self.kwargs)
+        self.fs._raise_not_found_for_status(r, self.url)
+        return await r.read()
     _fetch_all = sync_wrapper(async_fetch_all)
 
     def _parse_content_range(self, headers):
         """Parse the Content-Range header"""
-        pass
+        if "Content-Range" in headers:
+            content_range = headers["Content-Range"]
+            match = re.match(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range)
+            if match:
+                start, end, total = match.groups()
+                return int(start), int(end), int(total) if total != "*" else None
+        return None, None, None
 
     async def async_fetch_range(self, start, end):
         """Download a block of data
@@ -197,7 +251,35 @@ class HTTPFile(AbstractBufferedFile):
         and then stream the output - if the data size is bigger than we
         requested, an exception is raised.
         """
-        pass
+        kwargs = self.kwargs.copy()
+        headers = kwargs.pop('headers', {}).copy()
+        headers['Range'] = f'bytes={start}-{end-1}'
+        r = await self.session.get(self.url, headers=headers, **kwargs)
+        self.fs._raise_not_found_for_status(r, self.url)
+        if r.status == 206:
+            # partial content, as expected
+            return await r.read()
+        elif r.status == 200:
+            # full content, have to truncate
+            if self.size is not None:
+                raise ValueError(
+                    "Got full content, but expected partial. "
+                    "Cannot return partial content"
+                )
+            content_range = self._parse_content_range(r.headers)
+            if content_range:
+                _, _, total = content_range
+            else:
+                total = int(r.headers['Content-Length'])
+            if total < end:
+                raise ValueError(
+                    "Got full content, but full length is less than requested end"
+                )
+            return (await r.read())[start:end]
+        else:
+            raise ValueError(
+                f"Got status code {r.status} instead of 206 (partial content) or 200 (full content)"
+            )
     _fetch_range = sync_wrapper(async_fetch_range)
 
     def __reduce__(self):
@@ -246,5 +328,36 @@ async def _file_info(url, session, size_policy='head', **kwargs):
     Default operation is to explicitly allow redirects and use encoding
     'identity' (no compression) to get the true size of the target.
     """
-    pass
+    kwargs = kwargs.copy()
+    kwargs['allow_redirects'] = True
+    headers = kwargs.get('headers', {}).copy()
+    headers['Accept-Encoding'] = 'identity'
+    kwargs['headers'] = headers
+
+    info = {}
+    if size_policy == 'head':
+        r = await session.head(url, **kwargs)
+    elif size_policy == 'get':
+        r = await session.get(url, **kwargs)
+    else:
+        raise ValueError(f"size_policy must be 'head' or 'get', got {size_policy}")
+
+    info['url'] = r.url
+    info['name'] = url
+
+    if 'Content-Length' in r.headers:
+        info['size'] = int(r.headers['Content-Length'])
+    elif 'Content-Range' in r.headers:
+        info['size'] = int(r.headers['Content-Range'].split('/')[-1])
+
+    if 'Content-Type' in r.headers:
+        info['mimetype'] = r.headers['Content-Type']
+
+    if 'Last-Modified' in r.headers:
+        info['mtime'] = r.headers['Last-Modified']
+
+    if 'ETag' in r.headers:
+        info['etag'] = r.headers['ETag']
+
+    return info
 file_size = sync_wrapper(_file_size)
