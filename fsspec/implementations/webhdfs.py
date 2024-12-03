@@ -93,7 +93,7 @@ class WebHDFS(AbstractFileSystem):
         self.password = password
         if password is not None:
             if user is None:
-                raise ValueError('If passing a password, the user must also beset in order to set up the basic-auth')
+                raise ValueError('If passing a password, the user must also be set in order to set up the basic-auth')
         elif user is not None:
             self.pars['user.name'] = user
         if proxy_to is not None:
@@ -107,7 +107,6 @@ class WebHDFS(AbstractFileSystem):
 
     def _open(self, path, mode='rb', block_size=None, autocommit=True, replication=None, permissions=None, **kwargs):
         """
-
         Parameters
         ----------
         path: str
@@ -129,19 +128,25 @@ class WebHDFS(AbstractFileSystem):
         -------
         WebHDFile instance
         """
-        pass
+        return WebHDFile(self, path, mode=mode, block_size=block_size, autocommit=autocommit,
+                         replication=replication, permissions=permissions, **kwargs)
 
     def content_summary(self, path):
         """Total numbers of files, directories and bytes under path"""
-        pass
+        path = self._strip_protocol(path)
+        out = self._call('GETSUMMARY', path)
+        return out['ContentSummary']
 
     def ukey(self, path):
         """Checksum info of file, giving method and result"""
-        pass
+        path = self._strip_protocol(path)
+        out = self._call('GETFILECHECKSUM', path)
+        return out['FileChecksum']
 
     def home_directory(self):
         """Get user's home directory"""
-        pass
+        out = self._call('GETHOMEDIRECTORY')
+        return out['Path']
 
     def get_delegation_token(self, renewer=None):
         """Retrieve token which can give the same authority to other uses
@@ -151,15 +156,20 @@ class WebHDFS(AbstractFileSystem):
         renewer: str or None
             User who may use this token; if None, will be current user
         """
-        pass
+        if renewer:
+            out = self._call('GETDELEGATIONTOKEN', renewer=renewer)
+        else:
+            out = self._call('GETDELEGATIONTOKEN')
+        return out['Token']['urlString']
 
     def renew_delegation_token(self, token):
         """Make token live longer. Returns new expiry time"""
-        pass
+        out = self._call('RENEWDELEGATIONTOKEN', token=token)
+        return out['long']
 
     def cancel_delegation_token(self, token):
         """Stop the token from being useful"""
-        pass
+        self._call('CANCELDELEGATIONTOKEN', token=token)
 
     def chmod(self, path, mod):
         """Set the permission at path
@@ -169,14 +179,23 @@ class WebHDFS(AbstractFileSystem):
         path: str
             location to set (file or directory)
         mod: str or int
-            posix epresentation or permission, give as oct string, e.g, '777'
+            posix representation of permission, give as oct string, e.g, '777'
             or 0o777
         """
-        pass
+        path = self._strip_protocol(path)
+        if isinstance(mod, str):
+            mod = int(mod, 8)
+        self._call('SETPERMISSION', path, permission=oct(mod)[2:])
 
     def chown(self, path, owner=None, group=None):
         """Change owning user and/or group"""
-        pass
+        path = self._strip_protocol(path)
+        kwargs = {}
+        if owner is not None:
+            kwargs['owner'] = owner
+        if group is not None:
+            kwargs['group'] = group
+        self._call('SETOWNER', path, **kwargs)
 
     def set_replication(self, path, replication):
         """
@@ -190,7 +209,8 @@ class WebHDFS(AbstractFileSystem):
             Number of copies of file on the cluster. Should be smaller than
             number of data nodes; normally 3 on most systems.
         """
-        pass
+        path = self._strip_protocol(path)
+        self._call('SETREPLICATION', path, replication=replication)
 
 class WebHDFile(AbstractBufferedFile):
     """A file living in HDFS over webHDFS"""
@@ -208,10 +228,11 @@ class WebHDFile(AbstractBufferedFile):
             self.target = self.path
             self.path = os.path.join(tempdir, str(uuid.uuid4()))
 
-    def _upload_chunk(self, final=False):
-        """Write one part of a multi-block file upload
-
-        Parameters
+        final: bool
+            This is the last block, so should complete file, if
+            self.autocommit is True.
+        """
+        pass
         ==========
         final: bool
             This is the last block, so should complete file, if
@@ -221,4 +242,10 @@ class WebHDFile(AbstractBufferedFile):
 
     def _initiate_upload(self):
         """Create remote file/upload"""
-        pass
+        if self.mode not in {'wb', 'ab'}:
+            raise ValueError("File must be in write or append mode")
+        if self.mode == 'wb':
+            self.fs._call('CREATE', self.path, overwrite=True)
+        elif self.mode == 'ab':
+            info = self.fs.info(self.path)
+            self.offset = info['size']
