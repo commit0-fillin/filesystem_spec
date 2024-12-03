@@ -56,11 +56,13 @@ class FSMap(MutableMapping):
     @cached_property
     def dirfs(self):
         """dirfs instance that can be used with the same keys as the mapper"""
-        pass
+        from fsspec.implementations.dirfs import DirFS
+        return DirFS(self.root, fs=self.fs)
 
     def clear(self):
         """Remove all keys below root - empties out mapping"""
-        pass
+        for key in self.keys():
+            del self[key]
 
     def getitems(self, keys, on_error='raise'):
         """Fetch multiple items from the store
@@ -82,7 +84,21 @@ class FSMap(MutableMapping):
         -------
         dict(key, bytes|exception)
         """
-        pass
+        out = {}
+        for key in keys:
+            try:
+                out[key] = self[key]
+            except self.missing_exceptions:
+                if on_error == 'raise':
+                    raise KeyError(key)
+                elif on_error == 'return':
+                    out[key] = KeyError(key)
+            except Exception as e:
+                if on_error == 'raise':
+                    raise
+                elif on_error == 'return':
+                    out[key] = e
+        return out
 
     def setitems(self, values_dict):
         """Set the values of multiple items in the store
@@ -91,19 +107,24 @@ class FSMap(MutableMapping):
         ----------
         values_dict: dict(str, bytes)
         """
-        pass
+        for key, value in values_dict.items():
+            self[key] = value
 
     def delitems(self, keys):
         """Remove multiple keys from the store"""
-        pass
+        for key in keys:
+            try:
+                del self[key]
+            except KeyError:
+                pass
 
     def _key_to_str(self, key):
         """Generate full path for the key"""
-        pass
+        return self.fs._strip_protocol(posixpath.join(self.root, key))
 
     def _str_to_key(self, s):
         """Strip path of to leave key name"""
-        pass
+        return posixpath.relpath(s, self.root)
 
     def __getitem__(self, key, default=None):
         """Retrieve data"""
@@ -118,7 +139,14 @@ class FSMap(MutableMapping):
 
     def pop(self, key, default=None):
         """Pop data"""
-        pass
+        try:
+            value = self[key]
+            del self[key]
+            return value
+        except KeyError:
+            if default is not None:
+                return default
+            raise
 
     def __setitem__(self, key, value):
         """Store value in key"""
@@ -178,4 +206,13 @@ def get_mapper(url='', check=False, create=False, missing_exceptions=None, alter
     -------
     ``FSMap`` instance, the dict-like key-value store.
     """
-    pass
+    from fsspec import open_files
+
+    of = open_files(url, **kwargs)[0]
+    fs = of.fs
+    path = alternate_root or of.path
+
+    # Remove trailing slash from path
+    path = path.rstrip('/')
+
+    return FSMap(path, fs, check=check, create=create, missing_exceptions=missing_exceptions)
