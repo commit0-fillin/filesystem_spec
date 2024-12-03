@@ -27,4 +27,6 @@ class DataFileSystem(AbstractFileSystem):
 
         This version always base64 encodes, even when the data is ascii/url-safe.
         """
-        pass
+        encoded_data = base64.b64encode(data).decode('ascii')
+        mime_type = mime if mime else 'application/octet-stream'
+        return f"data:{mime_type};base64,{encoded_data}"
