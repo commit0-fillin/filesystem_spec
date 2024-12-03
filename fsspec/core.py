@@ -89,11 +89,13 @@ class OpenFile:
         instances persisting. You must, therefore, keep a reference to the OpenFile
         during the life of the file-like it generates.
         """
-        pass
+        return self.__enter__()
 
     def close(self):
         """Close all encapsulated file objects"""
-        pass
+        for f in reversed(self.fobjects):
+            f.close()
+        self.fobjects.clear()
 
 class OpenFiles(list):
     """List of OpenFile instances
@@ -215,7 +217,18 @@ def open_files(urlpath, mode='rb', compression=None, encoding='utf8', errors=Non
     - For implementations in separate packages see
       https://filesystem-spec.readthedocs.io/en/latest/api.html#other-known-implementations
     """
-    pass
+    fs, fs_token, paths = get_fs_token_paths(urlpath, mode, num, protocol, expand=expand, name_function=name_function, storage_options=kwargs)
+    
+    if compression == "infer":
+        compression = infer_compression(paths[0])
+    
+    openfiles = [OpenFile(fs, path, mode=mode, compression=compression, encoding=encoding, errors=errors, newline=newline) for path in paths]
+    
+    if auto_mkdir and 'w' in mode:
+        parents = {fs._parent(path) for path in paths}
+        [fs.makedirs(parent, exist_ok=True) for parent in parents]
+    
+    return OpenFiles(openfiles, mode=mode, fs=fs)
 
 def url_to_fs(url, **kwargs):
     """
@@ -237,7 +250,22 @@ def url_to_fs(url, **kwargs):
     urlpath : str
         The file-systems-specific URL for ``url``.
     """
-    pass
+    chain = _unstrip_protocol(url)
+    
+    if len(chain) == 1:
+        protocol, urlpath = chain[0]
+        fs = filesystem(protocol, **kwargs)
+        return fs, urlpath
+    
+    else:
+        protocol, urlpath = chain.pop(0)
+        fs = filesystem(protocol, **kwargs)
+        
+        while chain:
+            protocol, urlpath = chain.pop(0)
+            fs = fs.open(urlpath, protocol=protocol)
+        
+        return fs, urlpath
 DEFAULT_EXPAND = conf.get('open_expand', False)
 
 def open(urlpath, mode='rb', compression=None, encoding='utf8', errors=None, protocol=None, newline=None, expand=None, **kwargs):
@@ -263,7 +291,7 @@ def open(urlpath, mode='rb', compression=None, encoding='utf8', errors=None, pro
     newline: bytes or None
         Used for line terminator in text mode. If None, uses system default;
         if blank, uses no translation.
-    expand: bool or Nonw
+    expand: bool or None
         Whether to regard file paths containing special glob characters as needing
         expansion (finding the first match) or absolute. Setting False allows using
         paths which do embed such characters. If None (default), this argument
@@ -298,7 +326,15 @@ def open(urlpath, mode='rb', compression=None, encoding='utf8', errors=None, pro
     - For implementations in separate packages see
       https://filesystem-spec.readthedocs.io/en/latest/api.html#other-known-implementations
     """
-    pass
+    if expand is None:
+        expand = DEFAULT_EXPAND
+    
+    fs, path = url_to_fs(urlpath, **(kwargs or {}))
+    
+    if compression == "infer":
+        compression = infer_compression(path)
+    
+    return OpenFile(fs, path, mode=mode, compression=compression, encoding=encoding, errors=errors, newline=newline)
 
 def open_local(url: str | list[str] | Path | list[Path], mode: str='rb', **storage_options: dict) -> str | list[str]:
     """Open file(s) which can be resolved to local
@@ -314,15 +350,33 @@ def open_local(url: str | list[str] | Path | list[Path], mode: str='rb', **stora
     storage_options:
         passed on to FS for or used by open_files (e.g., compression)
     """
-    pass
+    if 'r' not in mode:
+        raise ValueError("Only read mode is supported")
+    
+    if isinstance(url, (str, Path)):
+        urls = [url]
+    else:
+        urls = url
+    
+    fs, _, paths = get_fs_token_paths(urls, mode=mode, storage_options=storage_options)
+    
+    if not hasattr(fs, 'open_many'):
+        raise ValueError("Cannot open multiple files")
+    
+    with fs.open_many(paths) as openfiles:
+        return [f.name for f in openfiles]
 
 def split_protocol(urlpath):
     """Return protocol, path pair"""
-    pass
+    if '://' in urlpath:
+        protocol, path = urlpath.split('://', 1)
+        return protocol, path
+    return None, urlpath
 
 def strip_protocol(urlpath):
     """Return only path part of full URL, according to appropriate backend"""
-    pass
+    protocol, path = split_protocol(urlpath)
+    return path
 
 def expand_paths_if_needed(paths, mode, num, fs, name_function):
     """Expand paths if they have a ``*`` in them (write mode) or any of ``*?[]``
@@ -340,7 +394,19 @@ def expand_paths_if_needed(paths, mode, num, fs, name_function):
         ``urlpath.replace('*', name_function(partition_index))``.
     :return: list of paths
     """
-    pass
+    if 'w' in mode:
+        if isinstance(paths, str):
+            if '*' in paths:
+                paths = [paths.replace('*', name_function(i)) for i in range(num)]
+            else:
+                paths = [paths]
+    elif isinstance(paths, str):
+        if has_magic(paths):
+            paths = fs.glob(paths)
+        else:
+            paths = [paths]
+    
+    return paths
 
 def get_fs_token_paths(urlpath, mode='rb', num=1, name_function=None, storage_options=None, protocol=None, expand=True):
     """Filesystem, deterministic token, and paths from a urlpath and options.
@@ -365,7 +431,42 @@ def get_fs_token_paths(urlpath, mode='rb', num=1, name_function=None, storage_op
     expand: bool
         Expand string paths for writing, assuming the path is a directory
     """
-    pass
+    if isinstance(urlpath, (list, tuple)):
+        if not urlpath:
+            raise ValueError("empty urlpath sequence")
+        protocols, paths = zip(*[split_protocol(u) for u in urlpath])
+        protocol = protocol or protocols[0]
+        if not all(p == protocol for p in protocols):
+            raise ValueError("When specifying a list of paths, all paths must "
+                             "share the same protocol")
+        cls = get_filesystem_class(protocol)
+        options = storage_options or {}
+        fs = cls(**options)
+        paths = expand_paths_if_needed(paths, mode, num, fs, name_function)
+
+    elif isinstance(urlpath, str) or hasattr(urlpath, '__fspath__'):
+        urlpath = stringify_path(urlpath)
+        protocol, path = split_protocol(urlpath)
+        protocol = protocol or 'file'
+
+        cls = get_filesystem_class(protocol)
+
+        options = storage_options or {}
+        fs = cls(**options)
+
+        if 'w' in mode:
+            paths = expand_paths_if_needed([path], mode, num, fs, name_function)
+        elif "*" in path:
+            paths = sorted(fs.glob(path))
+        else:
+            paths = [path]
+
+    else:
+        raise TypeError('url type not understood: %s' % urlpath)
+
+    fs_token = tokenize(urlpath, protocol, storage_options)
+    
+    return fs, fs_token, paths
 
 class PickleableTextIOWrapper(io.TextIOWrapper):
     """TextIOWrapper cannot be pickled. This solves it.
