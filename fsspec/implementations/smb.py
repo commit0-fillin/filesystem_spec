@@ -101,13 +101,25 @@ class SMBFileSystem(AbstractFileSystem):
         self.auto_mkdir = auto_mkdir
         self._connect()
 
+    def _connect(self):
+        smbclient.register_session(
+            self.host,
+            username=self.username,
+            password=self.password,
+            port=self.port,
+            encrypt=self.encrypt,
+            connection_timeout=self.timeout,
+        )
+
     def created(self, path):
         """Return the created timestamp of a file as a datetime.datetime"""
-        pass
+        info = smbclient.stat(self._strip_protocol(path))
+        return datetime.datetime.fromtimestamp(info.create_time)
 
     def modified(self, path):
         """Return the modified timestamp of a file as a datetime.datetime"""
-        pass
+        info = smbclient.stat(self._strip_protocol(path))
+        return datetime.datetime.fromtimestamp(info.change_time)
 
     def _open(self, path, mode='rb', block_size=-1, autocommit=True, cache_options=None, **kwargs):
         """
@@ -119,11 +131,24 @@ class SMBFileSystem(AbstractFileSystem):
         By specifying 'share_access' in 'kwargs' it is possible to override the
         default shared access setting applied in the constructor of this object.
         """
-        pass
+        path = self._strip_protocol(path)
+        share_access = kwargs.get('share_access', self.share_access)
+        
+        if mode == 'rb':
+            return smbclient.open_file(path, mode='rb', share_access=share_access, buffering=block_size)
+        elif mode == 'wb':
+            if self.auto_mkdir:
+                self.makedirs(self._parent(path), exist_ok=True)
+            temp = kwargs.pop('temp', self.temppath)
+            return SMBFileOpener(path, temp, mode, port=self.port, block_size=block_size, **kwargs)
+        else:
+            raise NotImplementedError(f"File mode not supported: {mode}")
 
     def copy(self, path1, path2, **kwargs):
         """Copy within two locations in the same filesystem"""
-        pass
+        path1 = self._strip_protocol(path1)
+        path2 = self._strip_protocol(path2)
+        smbclient.copyfile(path1, path2)
 
 class SMBFileOpener:
     """writes to remote temporary file, move on commit"""
@@ -141,11 +166,18 @@ class SMBFileOpener:
 
     def commit(self):
         """Move temp file to definitive on success."""
-        pass
+        if self.smbfile:
+            self.smbfile.close()
+        smbclient.rename(self.temp, self.path)
 
     def discard(self):
         """Remove the temp file on failure."""
-        pass
+        if self.smbfile:
+            self.smbfile.close()
+        try:
+            smbclient.remove(self.temp)
+        except FileNotFoundError:
+            pass
 
     def __fspath__(self):
         return self.path
