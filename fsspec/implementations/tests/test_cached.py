@@ -24,8 +24,27 @@ def test_equality(tmpdir):
 
     Related: GitHub#577, GitHub#578
     """
-    pass
+    from fsspec.implementations.cached import CachingFileSystem
+    from fsspec.implementations.memory import MemoryFileSystem
+
+    fs1 = CachingFileSystem(target_protocol='memory', cache_storage=str(tmpdir))
+    fs2 = CachingFileSystem(target_protocol='memory', cache_storage=str(tmpdir))
+    fs3 = CachingFileSystem(target_protocol='memory', cache_storage=str(tmpdir), cache_check=20)
+    mem_fs = MemoryFileSystem()
+
+    assert fs1 == fs2
+    assert fs1 != fs3
+    assert fs1 != mem_fs
+
+    assert hash(fs1) == hash(fs2)
+    assert hash(fs1) != hash(fs3)
+    assert hash(fs1) != hash(mem_fs)
 
 def test_str():
     """Test that the str representation refers to correct class."""
-    pass
+    from fsspec.implementations.cached import CachingFileSystem
+
+    fs = CachingFileSystem(target_protocol='memory', cache_storage='/tmp/cache')
+    assert 'CachingFileSystem' in str(fs)
+    assert 'target_protocol=memory' in str(fs)
+    assert 'cache_storage=/tmp/cache' in str(fs)
