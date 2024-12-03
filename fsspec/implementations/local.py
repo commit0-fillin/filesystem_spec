@@ -59,6 +59,14 @@ class LocalFileOpener(io.IOBase):
         self.blocksize = io.DEFAULT_BUFFER_SIZE
         self._open()
 
+    def _open(self):
+        if self.f is not None:
+            return
+        if self.autocommit and 'w' in self.mode:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        f = open(self.path, mode=self.mode)
+        self.f = compr[self.compression](f, mode=self.mode)
+
     def __setstate__(self, state):
         self.f = None
         loc = state.pop('loc', None)
@@ -90,3 +98,17 @@ class LocalFileOpener(io.IOBase):
     def __exit__(self, exc_type, exc_value, traceback):
         self._incontext = False
         self.f.__exit__(exc_type, exc_value, traceback)
+
+    def close(self):
+        if self.f is not None:
+            self.f.close()
+        self.f = None
+
+    def readable(self):
+        return 'r' in self.mode or '+' in self.mode
+
+    def writable(self):
+        return 'w' in self.mode or 'a' in self.mode or '+' in self.mode
+
+    def seekable(self):
+        return self.f.seekable()
