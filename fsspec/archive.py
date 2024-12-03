@@ -23,4 +23,9 @@ class AbstractArchiveFileSystem(AbstractFileSystem):
         ----------
         paths: Iterable of path strings
         """
-        pass
+        dirnames = set()
+        for path in paths:
+            parts = path.split('/')
+            for i in range(1, len(parts)):
+                dirnames.add('/'.join(parts[:i]))
+        return list(dirnames)
