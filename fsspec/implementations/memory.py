@@ -26,7 +26,23 @@ class MemoryFileSystem(AbstractFileSystem):
 
         Avoids copies of the data if possible
         """
-        pass
+        if isinstance(value, bytes):
+            self.store[path] = MemoryFile(self, path, value)
+        elif isinstance(value, str):
+            self.store[path] = MemoryFile(self, path, value.encode())
+        elif hasattr(value, 'read'):
+            if hasattr(value, 'seekable') and value.seekable():
+                value.seek(0)
+            self.store[path] = MemoryFile(self, path, value.read())
+        else:
+            raise ValueError("Cannot pipe value of type {}".format(type(value)))
+        
+        # Update parent directories
+        parts = path.split('/')
+        for i in range(1, len(parts)):
+            parent = '/'.join(parts[:i])
+            if parent not in self.pseudo_dirs:
+                self.pseudo_dirs.append(parent)
 
 class MemoryFile(BytesIO):
     """A BytesIO which can't close and works as a context manager
