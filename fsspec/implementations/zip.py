@@ -54,4 +54,8 @@ class ZipFileSystem(AbstractArchiveFileSystem):
 
     def close(self):
         """Commits any write changes to the file. Done on ``del`` too."""
-        pass
+        if hasattr(self, 'zip'):
+            self.zip.close()
+        if hasattr(self, 'of'):
+            self.of.__exit__(None, None, None)
+        self.dir_cache = None
