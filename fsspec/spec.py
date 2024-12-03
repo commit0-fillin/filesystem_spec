@@ -129,7 +129,7 @@ class AbstractFileSystem(metaclass=_Cached):
         """Persistent filesystem id that can be used to compare filesystems
         across sessions.
         """
-        pass
+        return hash(self)
 
     def __dask_tokenize__(self):
         return self._fs_token
@@ -149,11 +149,20 @@ class AbstractFileSystem(metaclass=_Cached):
 
         May require FS-specific handling, e.g., for relative paths or links.
         """
-        pass
+        if isinstance(path, list):
+            return [cls._strip_protocol(p) for p in path]
+        path = stringify_path(path)
+        if path.startswith(cls.protocol + '://'):
+            return path[len(cls.protocol) + 3:]
+        return path
 
     def unstrip_protocol(self, name: str) -> str:
         """Format FS-specific path to generic, including protocol"""
-        pass
+        if isinstance(self.protocol, tuple):
+            protocol = self.protocol[0]
+        else:
+            protocol = self.protocol
+        return f"{protocol}://{name}"
 
     @staticmethod
     def _get_kwargs_from_urls(path):
@@ -165,7 +174,7 @@ class AbstractFileSystem(metaclass=_Cached):
         Examples may look like an sftp path "sftp://user@host:/my/path", where
         the user and host should become kwargs and later get stripped.
         """
-        pass
+        return {}
 
     @classmethod
     def current(cls):
@@ -173,7 +182,9 @@ class AbstractFileSystem(metaclass=_Cached):
 
         If no instance has been created, then create one with defaults
         """
-        pass
+        if cls._latest is None:
+            return cls()
+        return cls._cache[cls._latest]
 
     @property
     def transaction(self):
