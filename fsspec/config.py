@@ -27,7 +27,22 @@ def set_conf_env(conf_dict, envdict=os.environ):
     envdict : dict-like(str, str)
         Source for the values - usually the real environment
     """
-    pass
+    for key, value in envdict.items():
+        if key.startswith("FSSPEC_"):
+            parts = key.split("_")
+            if len(parts) == 2:
+                # FSSPEC_<protocol>
+                protocol = parts[1].lower()
+                try:
+                    protocol_conf = json.loads(value)
+                    conf_dict.setdefault(protocol, {}).update(protocol_conf)
+                except json.JSONDecodeError:
+                    warnings.warn(f"Failed to parse JSON for {key}")
+            elif len(parts) > 2:
+                # FSSPEC_<protocol>_<kwarg>
+                protocol = parts[1].lower()
+                kwarg = "_".join(parts[2:]).lower()
+                conf_dict.setdefault(protocol, {})[kwarg] = value
 
 def set_conf_files(cdir, conf_dict):
     """Set config values from files
@@ -46,7 +61,24 @@ def set_conf_files(cdir, conf_dict):
     conf_dict : dict(str, dict)
         This dict will be mutated
     """
-    pass
+    if not os.path.exists(cdir):
+        return
+
+    for filename in sorted(os.listdir(cdir)):
+        filepath = os.path.join(cdir, filename)
+        if filename.endswith('.json'):
+            with open(filepath, 'r') as f:
+                try:
+                    data = json.load(f)
+                    for protocol, config in data.items():
+                        conf_dict.setdefault(protocol, {}).update(config)
+                except json.JSONDecodeError:
+                    warnings.warn(f"Failed to parse JSON file: {filepath}")
+        elif filename.endswith('.ini'):
+            config = configparser.ConfigParser()
+            config.read(filepath)
+            for section in config.sections():
+                conf_dict.setdefault(section, {}).update(config[section])
 
 def apply_config(cls, kwargs, conf_dict=None):
     """Supply default values for kwargs when instantiating class
@@ -65,6 +97,17 @@ def apply_config(cls, kwargs, conf_dict=None):
     -------
     dict : the modified set of kwargs
     """
-    pass
+    if conf_dict is None:
+        conf_dict = conf
+
+    protocols = cls.protocol if isinstance(cls.protocol, (list, tuple)) else [cls.protocol]
+    
+    for protocol in protocols:
+        if protocol in conf_dict:
+            for key, value in conf_dict[protocol].items():
+                if key not in kwargs:
+                    kwargs[key] = value
+
+    return kwargs
 set_conf_files(conf_dir, conf)
 set_conf_env(conf)
