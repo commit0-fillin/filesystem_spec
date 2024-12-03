@@ -58,7 +58,22 @@ class DatabricksFileSystem(AbstractFileSystem):
             but also additional information on file sizes
             and types.
         """
-        pass
+        path = self._strip_protocol(path)
+        data = self._send_to_api("get", "list", {"path": path})
+        files = data.get("files", [])
+        
+        if not detail:
+            return [f["path"] for f in files]
+        
+        return [
+            {
+                "name": f["path"],
+                "size": f["file_size"],
+                "type": "file" if f["is_file"] else "directory",
+                "modificationTime": f["modification_time"]
+            }
+            for f in files
+        ]
 
     def makedirs(self, path, exist_ok=True):
         """
@@ -73,7 +88,11 @@ class DatabricksFileSystem(AbstractFileSystem):
             exists before creating it (and raises an
             Exception if this is the case)
         """
-        pass
+        path = self._strip_protocol(path)
+        if not exist_ok and self.exists(path):
+            raise FileExistsError(f"Path already exists: {path}")
+        
+        self._send_to_api("post", "mkdirs", {"path": path})
 
     def mkdir(self, path, create_parents=True, **kwargs):
         """
@@ -85,9 +104,17 @@ class DatabricksFileSystem(AbstractFileSystem):
             Absolute path to create
         create_parents: bool
             Whether to create all parents or not.
-            "False" is not implemented so far.
         """
-        pass
+        path = self._strip_protocol(path)
+        if create_parents:
+            return self.makedirs(path, exist_ok=True)
+        else:
+            if self.exists(path):
+                raise FileExistsError(f"Path already exists: {path}")
+            parent = self._parent(path)
+            if not self.exists(parent):
+                raise FileNotFoundError(f"Parent directory does not exist: {parent}")
+            self._send_to_api("post", "mkdirs", {"path": path})
 
     def rm(self, path, recursive=False, **kwargs):
         """
@@ -100,7 +127,11 @@ class DatabricksFileSystem(AbstractFileSystem):
         recursive: bool
             Recursively delete all files in a folder.
         """
-        pass
+        path = self._strip_protocol(path)
+        if self.isdir(path) and not recursive:
+            raise ValueError("Cannot delete non-empty directory without recursive=True")
+        
+        self._send_to_api("post", "delete", {"path": path, "recursive": recursive})
 
     def mv(self, source_path, destination_path, recursive=False, maxdepth=None, **kwargs):
         """
@@ -121,11 +152,17 @@ class DatabricksFileSystem(AbstractFileSystem):
         destination_path: str
             To where to move (absolute path)
         recursive: bool
-            Not implemented to far.
+            Not implemented so far.
         maxdepth:
-            Not implemented to far.
+            Not implemented so far.
         """
-        pass
+        source_path = self._strip_protocol(source_path)
+        destination_path = self._strip_protocol(destination_path)
+        
+        if recursive or maxdepth is not None:
+            raise NotImplementedError("Recursive and maxdepth options are not implemented for mv")
+        
+        self._send_to_api("post", "move", {"source_path": source_path, "destination_path": destination_path})
 
     def _open(self, path, mode='rb', block_size='default', **kwargs):
         """
@@ -134,7 +171,10 @@ class DatabricksFileSystem(AbstractFileSystem):
 
         Only the default blocksize is allowed.
         """
-        pass
+        path = self._strip_protocol(path)
+        if block_size != 'default':
+            raise ValueError("Only default block size is supported for Databricks files")
+        return DatabricksFile(self, path, mode=mode, **kwargs)
 
     def _send_to_api(self, method, endpoint, json):
         """
@@ -150,7 +190,19 @@ class DatabricksFileSystem(AbstractFileSystem):
         json: dict
             Dictionary of information to send
         """
-        pass
+        url = f"https://{self.instance}/api/2.0/dbfs/{endpoint}"
+        
+        if method.lower() == "get":
+            response = self.session.get(url, json=json)
+        elif method.lower() == "post":
+            response = self.session.post(url, json=json)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+        
+        if response.status_code != 200:
+            raise DatabricksException(response.status_code, response.text)
+        
+        return response.json()
 
     def _create_handle(self, path, overwrite=True):
         """
@@ -170,7 +222,8 @@ class DatabricksFileSystem(AbstractFileSystem):
             If a file already exist at this location, either overwrite
             it or raise an exception.
         """
-        pass
+        response = self._send_to_api("post", "create", {"path": path, "overwrite": overwrite})
+        return response["handle"]
 
     def _close_handle(self, handle):
         """
@@ -181,7 +234,7 @@ class DatabricksFileSystem(AbstractFileSystem):
         handle: str
             Which handle to close.
         """
-        pass
+        self._send_to_api("post", "close", {"handle": handle})
 
     def _add_data(self, handle, data):
         """
@@ -198,7 +251,8 @@ class DatabricksFileSystem(AbstractFileSystem):
         data: bytes
             Block of data to add to the handle.
         """
-        pass
+        encoded_data = base64.b64encode(data).decode('utf-8')
+        self._send_to_api("post", "add-block", {"handle": handle, "data": encoded_data})
 
     def _get_data(self, path, start, end):
         """
@@ -215,7 +269,12 @@ class DatabricksFileSystem(AbstractFileSystem):
         end: int
             End position of the block
         """
-        pass
+        length = end - start
+        if length > 1024 * 1024:  # 1MB
+            raise ValueError("Cannot read more than 1MB of data at once")
+        
+        response = self._send_to_api("get", "read", {"path": path, "offset": start, "length": length})
+        return base64.b64decode(response["data"])
 
 class DatabricksFile(AbstractBufferedFile):
     """
@@ -236,16 +295,24 @@ class DatabricksFile(AbstractBufferedFile):
 
     def _initiate_upload(self):
         """Internal function to start a file upload"""
-        pass
+        self.handle = self.fs._create_handle(self.path, overwrite=True)
 
     def _upload_chunk(self, final=False):
         """Internal function to add a chunk of data to a started upload"""
-        pass
+        if self.buffer.tell() > 0:
+            self.fs._add_data(self.handle, self.buffer.getvalue())
+            self.buffer.seek(0)
+            self.buffer.truncate()
+        if final:
+            self.fs._close_handle(self.handle)
 
     def _fetch_range(self, start, end):
         """Internal function to download a block of data"""
-        pass
+        return self.fs._get_data(self.path, start, end)
 
     def _to_sized_blocks(self, length, start=0):
         """Helper function to split a range from 0 to total_length into bloksizes"""
-        pass
+        while start < length:
+            end = min(start + self.blocksize, length)
+            yield start, end
+            start = end
