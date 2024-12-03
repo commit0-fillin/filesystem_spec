@@ -14,7 +14,19 @@ default_method = 'default'
 
 def _resolve_fs(url, method=None, protocol=None, storage_options=None):
     """Pick instance of backend FS"""
-    pass
+    from .core import url_to_fs
+
+    if method == 'default':
+        return url_to_fs(url, **(storage_options or {}))
+    elif method == 'generic':
+        protocol = protocol or url.split('://', 1)[0]
+        return _generic_fs.get(protocol), url
+    elif method == 'current':
+        protocol = protocol or url.split('://', 1)[0]
+        cls = get_filesystem_class(protocol)
+        return cls.current(), url
+    else:
+        raise ValueError(f"Method '{method}' not understood")
 
 def rsync(source, destination, delete_missing=False, source_field='size', dest_field='size', update_cond='different', inst_kwargs=None, fs=None, **kwargs):
     """Sync files between two directory trees
@@ -58,7 +70,45 @@ def rsync(source, destination, delete_missing=False, source_field='size', dest_f
     -------
     dict of the copy operations that were performed, {source: destination}
     """
-    pass
+    if fs is None:
+        fs = GenericFileSystem(**(inst_kwargs or {}))
+
+    source_fs, source_path = fs._resolve_fs(source)
+    dest_fs, dest_path = fs._resolve_fs(destination)
+
+    source_files = source_fs.find(source_path)
+    dest_files = dest_fs.find(dest_path)
+
+    operations = {}
+
+    for s_file in source_files:
+        rel_path = s_file[len(source_path):].lstrip('/')
+        d_file = f"{dest_path}/{rel_path}"
+
+        if d_file not in dest_files:
+            source_fs.get(s_file, d_file)
+            operations[s_file] = d_file
+        elif update_cond == 'always':
+            source_fs.get(s_file, d_file)
+            operations[s_file] = d_file
+        elif update_cond == 'different':
+            s_info = source_fs.info(s_file)
+            d_info = dest_fs.info(d_file)
+            s_value = s_info[source_field] if isinstance(source_field, str) else source_field(s_info)
+            d_value = d_info[dest_field] if isinstance(dest_field, str) else dest_field(d_info)
+            if s_value != d_value:
+                source_fs.get(s_file, d_file)
+                operations[s_file] = d_file
+
+    if delete_missing:
+        for d_file in dest_files:
+            rel_path = d_file[len(dest_path):].lstrip('/')
+            s_file = f"{source_path}/{rel_path}"
+            if s_file not in source_files:
+                dest_fs.rm(d_file)
+                operations[s_file] = None
+
+    return operations
 
 class GenericFileSystem(AsyncFileSystem):
     """Wrapper over all other FS types
@@ -96,5 +146,5 @@ class GenericFileSystem(AsyncFileSystem):
 
         See `func:rsync` for more details.
         """
-        pass
+        return rsync(source, destination, fs=self, **kwargs)
     make_many_dirs = sync_wrapper(_make_many_dirs)
