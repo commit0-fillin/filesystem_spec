@@ -17,42 +17,68 @@ def tempzip(data=None):
     """
     Provide test cases with temporary synthesized Zip archives.
     """
-    pass
+    if data is None:
+        data = archive_data
+    with tempfile.NamedTemporaryFile(suffix='.zip') as tmp:
+        with zipfile.ZipFile(tmp, mode='w') as zf:
+            for k, v in data.items():
+                zf.writestr(k, v)
+        tmp.flush()
+        yield tmp.name
 
 @contextmanager
 def temparchive(data=None):
     """
     Provide test cases with temporary synthesized 7-Zip archives.
     """
-    pass
+    if data is None:
+        data = archive_data
+    with tempfile.NamedTemporaryFile(suffix='.7z') as tmp:
+        with py7zr.SevenZipFile(tmp.name, mode='w') as archive:
+            for k, v in data.items():
+                archive.writestr(v, k)
+        tmp.flush()
+        yield tmp.name
 
 @contextmanager
 def temptar(data=None, mode='w', suffix='.tar'):
     """
     Provide test cases with temporary synthesized .tar archives.
     """
-    pass
+    if data is None:
+        data = archive_data
+    with tempfile.NamedTemporaryFile(suffix=suffix) as tmp:
+        with tarfile.open(tmp.name, mode=mode) as tar:
+            for k, v in data.items():
+                info = tarfile.TarInfo(name=k)
+                info.size = len(v)
+                tar.addfile(info, BytesIO(v))
+        tmp.flush()
+        yield tmp.name
 
 @contextmanager
 def temptargz(data=None, mode='w', suffix='.tar.gz'):
     """
     Provide test cases with temporary synthesized .tar.gz archives.
     """
-    pass
+    with temptar(data, mode=mode + ':gz', suffix=suffix) as fn:
+        yield fn
 
 @contextmanager
 def temptarbz2(data=None, mode='w', suffix='.tar.bz2'):
     """
     Provide test cases with temporary synthesized .tar.bz2 archives.
     """
-    pass
+    with temptar(data, mode=mode + ':bz2', suffix=suffix) as fn:
+        yield fn
 
 @contextmanager
 def temptarxz(data=None, mode='w', suffix='.tar.xz'):
     """
     Provide test cases with temporary synthesized .tar.xz archives.
     """
-    pass
+    with temptar(data, mode=mode + ':xz', suffix=suffix) as fn:
+        yield fn
 
 class ArchiveTestScenario:
     """
@@ -78,7 +104,15 @@ def pytest_generate_tests(metafunc):
 
     https://docs.pytest.org/en/latest/example/parametrize.html#a-quick-port-of-testscenarios
     """
-    pass
+    if 'scenario' in metafunc.fixturenames:
+        idlist = []
+        argvalues = []
+        for scenario in metafunc.cls.scenarios:
+            idlist.append(f"{scenario.protocol}")
+            if scenario.variant:
+                idlist[-1] += f"-{scenario.variant}"
+            argvalues.append(scenario)
+        metafunc.parametrize('scenario', argvalues, ids=idlist, scope="class")
 scenario_zip = ArchiveTestScenario(protocol='zip', provider=tempzip)
 scenario_tar = ArchiveTestScenario(protocol='tar', provider=temptar)
 scenario_targz = ArchiveTestScenario(protocol='tar', provider=temptargz, variant='gz')
