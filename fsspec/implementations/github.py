@@ -3,6 +3,7 @@ import fsspec
 from ..spec import AbstractFileSystem
 from ..utils import infer_storage_options
 from .memory import MemoryFile
+from typing import List, Dict, Union
 
 class GithubFileSystem(AbstractFileSystem):
     """Interface to files in github
@@ -69,22 +70,40 @@ class GithubFileSystem(AbstractFileSystem):
         -------
         List of string
         """
-        pass
+        import requests
+
+        if is_org:
+            url = f"https://api.github.com/orgs/{org_or_user}/repos"
+        else:
+            url = f"https://api.github.com/users/{org_or_user}/repos"
+
+        response = requests.get(url)
+        response.raise_for_status()
+        return [repo['name'] for repo in response.json()]
 
     @property
     def tags(self):
         """Names of tags in the repo"""
-        pass
+        url = f"https://api.github.com/repos/{self.org}/{self.repo}/tags"
+        response = requests.get(url, timeout=self.timeout, **self.kw)
+        response.raise_for_status()
+        return [tag['name'] for tag in response.json()]
 
     @property
     def branches(self):
         """Names of branches in the repo"""
-        pass
+        url = f"https://api.github.com/repos/{self.org}/{self.repo}/branches"
+        response = requests.get(url, timeout=self.timeout, **self.kw)
+        response.raise_for_status()
+        return [branch['name'] for branch in response.json()]
 
     @property
     def refs(self):
         """Named references, tags and branches"""
-        pass
+        return {
+            'tags': self.tags,
+            'branches': self.branches
+        }
 
     def ls(self, path, detail=False, sha=None, _sha=None, **kwargs):
         """List files at given path
@@ -102,4 +121,30 @@ class GithubFileSystem(AbstractFileSystem):
         _sha: str (optional)
             List this specific tree object (used internally to descend into trees)
         """
-        pass
+        if sha is None:
+            sha = self.root
+        if _sha is None:
+            url = self.url.format(org=self.org, repo=self.repo, sha=sha)
+            response = requests.get(url, timeout=self.timeout, **self.kw)
+            response.raise_for_status()
+            _sha = response.json()['sha']
+
+        url = f"https://api.github.com/repos/{self.org}/{self.repo}/git/trees/{_sha}"
+        response = requests.get(url, timeout=self.timeout, **self.kw)
+        response.raise_for_status()
+        tree = response.json()['tree']
+
+        out = []
+        for item in tree:
+            if item['path'].startswith(path):
+                if detail:
+                    out.append({
+                        'name': item['path'],
+                        'size': item['size'] if item['type'] == 'blob' else None,
+                        'type': 'file' if item['type'] == 'blob' else 'directory',
+                        'sha': item['sha']
+                    })
+                else:
+                    out.append(item['path'])
+
+        return out
