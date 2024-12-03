@@ -34,8 +34,15 @@ class DaskFile(AbstractBufferedFile):
 
     def _initiate_upload(self):
         """Create remote file/upload"""
-        pass
+        if self.mode not in {'wb', 'ab'}:
+            raise ValueError("File must be opened in write mode")
+        self.buffer = io.BytesIO()
+        self.offset = 0
+        self.forced = False
 
     def _fetch_range(self, start, end):
         """Get the specified set of bytes from remote"""
-        pass
+        if self.fs.worker is None:
+            return self.fs.fs._fetch_range(self.path, start, end)
+        else:
+            return self.fs.worker.fetch_range(self.path, start, end)
