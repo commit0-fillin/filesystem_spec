@@ -32,7 +32,11 @@ class LocalFileSystem(AbstractFileSystem):
 
 def make_path_posix(path):
     """Make path generic and absolute for current OS"""
-    pass
+    import os
+    import pathlib
+    
+    path = os.path.abspath(os.path.expanduser(path))
+    return pathlib.Path(path).as_posix()
 
 def trailing_sep(path):
     """Return True if the path ends with a path separator.
@@ -40,7 +44,7 @@ def trailing_sep(path):
     A forward slash is always considered a path separator, even on Operating
     Systems that normally use a backslash.
     """
-    pass
+    return path.endswith('/') or path.endswith(os.path.sep)
 
 class LocalFileOpener(io.IOBase):
 
