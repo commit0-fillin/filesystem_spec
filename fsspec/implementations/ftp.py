@@ -54,9 +54,14 @@ class FTPFileSystem(AbstractFileSystem):
         else:
             self.blocksize = 2 ** 16
         self._connect()
+        self.ftp = None
 
     def __del__(self):
-        self.ftp.close()
+        if self.ftp:
+            try:
+                self.ftp.quit()
+            except Exception:
+                self.ftp.close()
 
 class TransferDone(Exception):
     """Internal exception to break out of transfer"""
@@ -80,7 +85,15 @@ class FTPFile(AbstractBufferedFile):
         Will fail if the server does not respect the REST command on
         retrieve requests.
         """
-        pass
+        out = io.BytesIO()
+        
+        def callback(data):
+            out.write(data)
+            if out.tell() >= end - start:
+                raise TransferDone
+
+        self.fs.ftp.retrbinary(f'RETR {self.path}', callback, rest=start)
+        return out.getvalue()[:end-start]
 
 def _mlsd2(ftp, path='.'):
     """
@@ -95,4 +108,34 @@ def _mlsd2(ftp, path='.'):
     path: str
         Expects to be given path, but defaults to ".".
     """
-    pass
+    from datetime import datetime
+    import re
+
+    lines = []
+    ftp.dir(path, lines.append)
+
+    for line in lines:
+        parts = line.split(None, 8)
+        if len(parts) < 9:
+            continue
+
+        perms, _, user, group, size, month, day, year_or_time, name = parts
+
+        if ':' in year_or_time:
+            year = datetime.now().year
+            time = year_or_time
+        else:
+            year = int(year_or_time)
+            time = '00:00'
+
+        dt_str = f'{month} {day} {year} {time}'
+        mtime = datetime.strptime(dt_str, '%b %d %Y %H:%M')
+
+        type_ = 'dir' if perms.startswith('d') else 'file'
+        
+        yield {
+            'name': name,
+            'type': type_,
+            'size': int(size),
+            'mtime': mtime.timestamp(),
+        }
