@@ -16,7 +16,23 @@ def custom_reader(file, format_name='all', filter_name='all', block_size=ffi.pag
 
     The `file` object must support the standard `readinto` and 'seek' methods.
     """
-    pass
+    def read_callback(archive, context, buffer, length):
+        return file.readinto(ffi.buffer(buffer, length))
+
+    def seek_callback(archive, context, offset, whence):
+        return file.seek(offset, whence)
+
+    with libarchive.read_memory_fd(
+        None,
+        block_size,
+        format_name=format_name,
+        filter_name=filter_name
+    ) as archive:
+        ffi.read_set_seek_callback(archive, SEEK_CALLBACK(seek_callback))
+        ffi.read_set_read_callback(archive, ffi.READ_CALLBACK(read_callback))
+        ffi.read_set_format(archive, format_name)
+        ffi.read_set_filter(archive, filter_name)
+        yield archive
 
 class LibArchiveFileSystem(AbstractArchiveFileSystem):
     """Compressed archives as a file-system (read-only)
