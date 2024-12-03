@@ -32,7 +32,8 @@ class SigSlot:
 
     def _setup(self):
         """Create GUI elements and register signals"""
-        pass
+        self.widget = pn.widgets.Select(name="Select an option")
+        self._register(self.widget, "selection", "value")
 
     def _register(self, widget, name, thing='value', log_level=logging.DEBUG, auto=False):
         """Watch the given attribute of a widget and assign it a named event
@@ -56,11 +57,15 @@ class SigSlot:
             If True, automatically connects with a method in this class of the
             same name.
         """
-        pass
+        if widget is not None:
+            widget.param.watch(lambda event: self._signal(event), thing)
+        self._sigs[name] = log_level
+        if auto:
+            self.connect(name, getattr(self, name))
 
     def _repr_mimebundle_(self, *args, **kwargs):
         """Display in a notebook or a server"""
-        pass
+        return self.widget._repr_mimebundle_(*args, **kwargs)
 
     def connect(self, signal, slot):
         """Associate call back with given event
@@ -72,7 +77,10 @@ class SigSlot:
         Alternatively, the callback can be a string, in which case it means
         emitting the correspondingly-named event (i.e., connect to self)
         """
-        pass
+        if isinstance(slot, str):
+            self._map.setdefault(signal, []).append(lambda x: self._emit(slot, x))
+        else:
+            self._map.setdefault(signal, []).append(slot)
 
     def _signal(self, event):
         """This is called by a an action on a widget
@@ -82,7 +90,12 @@ class SigSlot:
         Tests can execute this method by directly changing the values of
         widget components.
         """
-        pass
+        if self._ignoring_events:
+            return
+        name = event.name
+        value = event.new
+        logger.log(self._sigs.get(name, logging.DEBUG), f"{name}: {value}")
+        self._emit(name, value)
 
     @contextlib.contextmanager
     def ignore_events(self):
@@ -90,7 +103,11 @@ class SigSlot:
 
         (does not propagate to children)
         """
-        pass
+        self._ignoring_events = True
+        try:
+            yield
+        finally:
+            self._ignoring_events = False
 
     def _emit(self, sig, value=None):
         """An event happened, call its callbacks
@@ -100,11 +117,13 @@ class SigSlot:
 
         Calling of callbacks will halt whenever one returns False.
         """
-        pass
+        for callback in self._map.get(sig, []):
+            if callback(value) is False:
+                break
 
     def show(self, threads=False):
         """Open a new browser tab and display this instance's interface"""
-        pass
+        return pn.serve(self.widget, show=True, threaded=threads)
 
 class SingleSelect(SigSlot):
     """A multiselect which only allows you to select one item for an event"""
@@ -155,17 +174,22 @@ class FileSelector(SigSlot):
     @property
     def storage_options(self):
         """Value of the kwargs box as a dictionary"""
-        pass
+        try:
+            return ast.literal_eval(self.init_kwargs)
+        except (ValueError, SyntaxError):
+            return {}
 
     @property
     def fs(self):
         """Current filesystem instance"""
-        pass
+        if self._fs is None:
+            self._fs = filesystem(self.init_protocol, **self.storage_options)
+        return self._fs
 
     @property
     def urlpath(self):
         """URL of currently selected item"""
-        pass
+        return f"{self.init_protocol}://{self.init_url}"
 
     def open_file(self, mode='rb', compression=None, encoding=None):
         """Create OpenFile instance for the currently selected item
@@ -191,4 +215,4 @@ class FileSelector(SigSlot):
         encoding: str (optional)
             If using text mode, use this encoding; defaults to UTF8.
         """
-        pass
+        return OpenFile(self.fs, self.urlpath, mode=mode, compression=compression, encoding=encoding)
