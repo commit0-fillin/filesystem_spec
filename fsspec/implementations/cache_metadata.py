@@ -43,11 +43,18 @@ class CacheMetadata:
 
     def _load(self, fn: str) -> Detail:
         """Low-level function to load metadata from specific file"""
-        pass
+        try:
+            with open(fn, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            # Fallback to pickle for backward compatibility
+            with open(fn, "rb") as f:
+                return pickle.load(f)
 
     def _save(self, metadata_to_save: Detail, fn: str) -> None:
         """Low-level function to save metadata to specific file"""
-        pass
+        with atomic_write(fn, mode="w") as f:
+            json.dump(metadata_to_save, f)
 
     def _scan_locations(self, writable_only: bool=False) -> Iterator[tuple[str, str, bool]]:
         """Yield locations (filenames) where metadata is stored, and whether
@@ -62,7 +69,12 @@ class CacheMetadata:
         -------
         Yields (str, str, bool)
         """
-        pass
+        for i, storage in enumerate(self._storage):
+            fn = os.path.join(storage, "cache")
+            writable = i == len(self._storage) - 1
+            if writable_only and not writable:
+                continue
+            yield storage, fn, writable
 
     def check_file(self, path: str, cfs: CachingFileSystem | None) -> Literal[False] | tuple[Detail, str]:
         """If path is in cache return its details, otherwise return ``False``.
@@ -71,7 +83,14 @@ class CacheMetadata:
         perform extra checks to reject possible matches, such as if they are
         too old.
         """
-        pass
+        for storage, _, _ in self._scan_locations():
+            detail = self.cached_files[storage].get(path)
+            if detail:
+                if cfs and cfs.check_files:
+                    if cfs.fs.modified(path) > detail["time"]:
+                        continue
+                return detail, storage
+        return False
 
     def clear_expired(self, expiry_time: int) -> tuple[list[str], bool]:
         """Remove expired metadata from the cache.
@@ -80,18 +99,45 @@ class CacheMetadata:
         flag indicating whether the writable cache is empty. Caller is
         responsible for deleting the expired files.
         """
-        pass
+        expired_files = []
+        now = time.time()
+        for storage, _, writable in self._scan_locations():
+            for path, detail in list(self.cached_files[storage].items()):
+                if now - detail["time"] > expiry_time:
+                    expired_files.append(os.path.join(storage, detail["fn"]))
+                    del self.cached_files[storage][path]
+        
+        writable_cache = self.cached_files[self._storage[-1]]
+        return expired_files, len(writable_cache) == 0
 
     def load(self) -> None:
         """Load all metadata from disk and store in ``self.cached_files``"""
-        pass
+        self.cached_files = {}
+        for storage, fn, _ in self._scan_locations():
+            if os.path.exists(fn):
+                self.cached_files[storage] = self._load(fn)
+            else:
+                self.cached_files[storage] = {}
 
     def on_close_cached_file(self, f: Any, path: str) -> None:
         """Perform side-effect actions on closing a cached file.
 
         The actual closing of the file is the responsibility of the caller.
         """
-        pass
+        if f.mode == 'rb':
+            return
+        fn = f.cache.cache_path
+        blocks = f.cache.blocks
+        if not blocks:
+            return
+        detail = {
+            "fn": fn,
+            "blocks": blocks,
+            "time": time.time(),
+            "size": f.size,
+        }
+        self.cached_files[self._storage[-1]][path] = detail
+        self.save()
 
     def pop_file(self, path: str) -> str | None:
         """Remove metadata of cached file.
@@ -100,12 +146,18 @@ class CacheMetadata:
         otherwise return ``None``.  Caller is responsible for deleting the
         cached file.
         """
-        pass
+        for storage in reversed(self._storage):
+            if path in self.cached_files[storage]:
+                detail = self.cached_files[storage].pop(path)
+                return os.path.join(storage, detail["fn"])
+        return None
 
     def save(self) -> None:
         """Save metadata to disk"""
-        pass
+        for storage, fn, writable in self._scan_locations():
+            if writable:
+                self._save(self.cached_files[storage], fn)
 
     def update_file(self, path: str, detail: Detail) -> None:
         """Update metadata for specific file in memory, do not save"""
-        pass
+        self.cached_files[self._storage[-1]][path] = detail
