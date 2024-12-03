@@ -40,4 +40,13 @@ class SimpleFileWriter(fsspec.spec.AbstractBufferedFile):
 
         Not suitable for large files
         """
-        pass
+        if final:
+            content = self.buffer.getvalue()
+            encoded_content = base64.b64encode(content).decode('utf-8')
+            data = {
+                'type': 'file',
+                'format': 'base64',
+                'content': encoded_content
+            }
+            response = self.fs.session.put(f"{self.fs.url}/{self.path}", json=data)
+            response.raise_for_status()
