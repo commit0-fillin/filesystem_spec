@@ -44,4 +44,21 @@ def vcr_config():
     If the DBFS_TOKEN env variable is set, we record with VCR.
     If not, we only replay (to not accidentally record with a wrong URL).
     """
-    pass
+    def before_record_request(request):
+        parsed = urlparse(request.uri)
+        request.uri = parsed._replace(netloc=DUMMY_INSTANCE).geturl()
+        if 'Authorization' in request.headers:
+            request.headers['Authorization'] = 'Bearer <TOKEN>'
+        return request
+
+    def before_record_response(response):
+        if 'Date' in response['headers']:
+            del response['headers']['Date']
+        return response
+
+    return {
+        'filter_headers': ['authorization'],
+        'before_record_request': before_record_request,
+        'before_record_response': before_record_response,
+        'record_mode': 'once' if TOKEN else 'none'
+    }
