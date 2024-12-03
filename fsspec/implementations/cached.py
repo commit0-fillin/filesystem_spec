@@ -129,23 +129,32 @@ class CachingFileSystem(AbstractFileSystem):
         If more than one cache directory is in use, only the size of the last
         one (the writable cache directory) is returned.
         """
-        pass
+        if self._cache_size is None:
+            self._cache_size = sum(os.path.getsize(os.path.join(self.storage[-1], f))
+                                   for f in os.listdir(self.storage[-1])
+                                   if os.path.isfile(os.path.join(self.storage[-1], f)))
+        return self._cache_size
 
     def load_cache(self):
         """Read set of stored blocks from file"""
-        pass
+        self._metadata.load()
+        self._check_cache()
 
     def save_cache(self):
         """Save set of stored blocks from file"""
-        pass
+        self._metadata.save()
 
     def _check_cache(self):
         """Reload caches if time elapsed or any disappeared"""
-        pass
+        self._metadata.check_cache(self.cache_check)
 
     def _check_file(self, path):
         """Is path in cache and still valid"""
-        pass
+        path = self._strip_protocol(path)
+        details = self._metadata.get_metadata(path)
+        if details:
+            return self.fs.isfile(path) and not self.fs.modified(path) > details["time"]
+        return False
 
     def clear_cache(self):
         """Remove all files and metadata from the cache
@@ -153,7 +162,10 @@ class CachingFileSystem(AbstractFileSystem):
         In the case of multiple cache locations, this clears only the last one,
         which is assumed to be the read/write one.
         """
-        pass
+        rmtree(self.storage[-1])
+        os.makedirs(self.storage[-1], exist_ok=True)
+        self._metadata.clear()
+        self._cache_size = None
 
     def clear_expired_cache(self, expiry_time=None):
         """Remove all expired files and metadata from the cache
@@ -168,7 +180,12 @@ class CachingFileSystem(AbstractFileSystem):
             If not defined the default is equivalent to the attribute from the
             file caching instantiation.
         """
-        pass
+        expiry_time = expiry_time or self.expiry
+        now = time.time()
+        for path, detail in self._metadata.items():
+            if now - detail["time"] > expiry_time:
+                self.pop_from_cache(path)
+        self._cache_size = None
 
     def pop_from_cache(self, path):
         """Remove cached version of given file
@@ -177,7 +194,17 @@ class CachingFileSystem(AbstractFileSystem):
         location which is not the last, it is assumed to be read-only, and
         raises PermissionError
         """
-        pass
+        path = self._strip_protocol(path)
+        cached_path = self._mapper(path)
+        for storage in self.storage[:-1]:
+            fn = os.path.join(storage, cached_path)
+            if os.path.exists(fn):
+                raise PermissionError(f"Cannot delete cached file {fn}")
+        fn = os.path.join(self.storage[-1], cached_path)
+        if os.path.exists(fn):
+            os.remove(fn)
+            self._metadata.pop(path)
+            self._cache_size = None
 
     def _open(self, path, mode='rb', block_size=None, autocommit=True, cache_options=None, **kwargs):
         """Wrap the target _open
@@ -192,11 +219,39 @@ class CachingFileSystem(AbstractFileSystem):
         We monkey-patch this file, so that when it closes, we call
         ``close_and_update`` to save the state of the blocks.
         """
-        pass
+        path = self._strip_protocol(path)
+        cache_options = cache_options or {}
+        cache_path = self._mapper(path)
+
+        if 'r' in mode:
+            detail = self._check_file(path)
+            if detail:
+                cache_path = detail['fn']
+                cache_location = detail['location']
+                fn = os.path.join(cache_location, cache_path)
+                return open(fn, mode)
+
+        # File not in cache or write mode, open normally
+        f = self.fs._open(path, mode=mode, block_size=block_size, **kwargs)
+        if 'r' in mode:
+            f.cache = BaseCache(f.size, f.blocksize, f._fetch_range, f.cache.cache_location or self.storage[-1])
+            closer = f.close
+            f.close = lambda: self.close_and_update(f, closer)
+        return f
 
     def close_and_update(self, f, close):
         """Called when a file is closing, so store the set of blocks"""
-        pass
+        if f.closed:
+            return
+        close()
+        path = self._strip_protocol(f.path)
+        fn = self._mapper(path)
+        blocks = f.cache.blocks
+        location = f.cache.cache_location
+        if not blocks:
+            return
+        self._metadata.update({path: {"fn": fn, "blocks": blocks, "time": time.time(), "location": location}})
+        self.save_cache()
 
     def __getattribute__(self, item):
         if item in {'load_cache', '_open', 'save_cache', 'close_and_update', '__init__', '__getattribute__', '__reduce__', '_make_local_details', 'open', 'cat', 'cat_file', 'cat_ranges', 'get', 'read_block', 'tail', 'head', 'info', 'ls', 'exists', 'isfile', 'isdir', '_check_file', '_check_cache', '_mkcache', 'clear_cache', 'clear_expired_cache', 'pop_from_cache', 'local_file', '_paths_from_path', 'get_mapper', 'open_many', 'commit_many', 'hash_name', '__hash__', '__eq__', 'to_json', 'to_dict', 'cache_size', 'pipe_file', 'pipe', 'start_transaction', 'end_transaction'}:
