@@ -68,7 +68,51 @@ def open_parquet_file(path, mode='rb', fs=None, metadata=None, columns=None, row
     **kwargs :
         Optional key-word arguments to pass to `fs.open`
     """
-    pass
+    from fsspec import open_files
+    from fsspec.core import url_to_fs
+    from fsspec.utils import infer_compression
+    
+    if fs is None:
+        fs, path = url_to_fs(path, **(storage_options or {}))
+    
+    compression = infer_compression(path)
+    
+    if engine == 'auto':
+        try:
+            import fastparquet
+            engine = 'fastparquet'
+        except ImportError:
+            try:
+                import pyarrow.parquet
+                engine = 'pyarrow'
+            except ImportError:
+                raise ValueError("No parquet engine available. Install either 'fastparquet' or 'pyarrow'.")
+    
+    if engine == 'fastparquet':
+        engine_obj = FastparquetEngine()
+    elif engine == 'pyarrow':
+        engine_obj = PyarrowEngine()
+    else:
+        raise ValueError(f"Unsupported engine: {engine}")
+    
+    if metadata is None:
+        metadata = engine_obj.read_metadata(fs, path, footer_sample_size)
+    
+    byte_ranges = _get_parquet_byte_ranges_from_metadata(
+        metadata, fs, engine, columns, row_groups, max_gap, max_block
+    )
+    
+    f = fs.open(
+        path,
+        mode=mode,
+        block_size=None,
+        cache_type='parts',
+        cache_options={'strict': strict, 'data': byte_ranges},
+        compression=compression,
+        **kwargs
+    )
+    
+    return f
 
 def _get_parquet_byte_ranges(paths, fs, metadata=None, columns=None, row_groups=None, max_gap=64000, max_block=256000000, footer_sample_size=1000000, engine='auto'):
     """Get a dictionary of the known byte ranges needed
@@ -77,7 +121,36 @@ def _get_parquet_byte_ranges(paths, fs, metadata=None, columns=None, row_groups=
     is intended for use as the `data` argument for the
     `KnownPartsOfAFile` caching strategy of a single path.
     """
-    pass
+    if engine == 'auto':
+        try:
+            import fastparquet
+            engine = 'fastparquet'
+        except ImportError:
+            try:
+                import pyarrow.parquet
+                engine = 'pyarrow'
+            except ImportError:
+                raise ValueError("No parquet engine available. Install either 'fastparquet' or 'pyarrow'.")
+    
+    if engine == 'fastparquet':
+        engine_obj = FastparquetEngine()
+    elif engine == 'pyarrow':
+        engine_obj = PyarrowEngine()
+    else:
+        raise ValueError(f"Unsupported engine: {engine}")
+    
+    byte_ranges = {}
+    for path in paths:
+        if metadata is None:
+            file_metadata = engine_obj.read_metadata(fs, path, footer_sample_size)
+        else:
+            file_metadata = metadata
+        
+        byte_ranges[path] = _get_parquet_byte_ranges_from_metadata(
+            file_metadata, fs, engine, columns, row_groups, max_gap, max_block
+        )
+    
+    return byte_ranges
 
 def _get_parquet_byte_ranges_from_metadata(metadata, fs, engine, columns=None, row_groups=None, max_gap=64000, max_block=256000000):
     """Simplified version of `_get_parquet_byte_ranges` for
@@ -85,7 +158,26 @@ def _get_parquet_byte_ranges_from_metadata(metadata, fs, engine, columns=None, r
     provided, and the remote footer metadata does not need to
     be transferred before calculating the required byte ranges.
     """
-    pass
+    if engine == 'fastparquet':
+        engine_obj = FastparquetEngine()
+    elif engine == 'pyarrow':
+        engine_obj = PyarrowEngine()
+    else:
+        raise ValueError(f"Unsupported engine: {engine}")
+    
+    byte_ranges = engine_obj.get_byte_ranges(metadata, columns, row_groups)
+    
+    # Merge adjacent byte ranges
+    from fsspec.utils import merge_offset_ranges
+    paths, starts, ends = merge_offset_ranges(
+        paths=[metadata.path] * len(byte_ranges),
+        starts=[r[0] for r in byte_ranges],
+        ends=[r[1] for r in byte_ranges],
+        max_gap=max_gap,
+        max_block=max_block
+    )
+    
+    return list(zip(starts, ends))
 
 class FastparquetEngine:
 
