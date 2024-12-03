@@ -24,7 +24,20 @@ def register_compression(name, callback, extensions, force=False):
         ValueError: If name or extensions already registered, and not force.
 
     """
-    pass
+    global compr
+    if name in compr and not force:
+        raise ValueError(f"Compression {name} already registered")
+    
+    if isinstance(extensions, str):
+        extensions = [extensions]
+    
+    for ext in extensions:
+        if ext in fsspec.utils.compressions and not force:
+            raise ValueError(f"Extension {ext} already registered")
+    
+    compr[name] = callback
+    for ext in extensions:
+        fsspec.utils.compressions[ext] = name
 register_compression('zip', unzip, 'zip')
 try:
     from bz2 import BZ2File
@@ -64,7 +77,8 @@ class SnappyFile(AbstractBufferedFile):
 
     def _fetch_range(self, start, end):
         """Get the specified set of bytes from remote"""
-        pass
+        self.infile.seek(start)
+        return self.codec.decompress(self.infile.read(end - start))
 try:
     import snappy
     snappy.compress(b'')
@@ -84,4 +98,4 @@ except ImportError:
 
 def available_compressions():
     """Return a list of the implemented compressions."""
-    pass
+    return list(compr.keys())
