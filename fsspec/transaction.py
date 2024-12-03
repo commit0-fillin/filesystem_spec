@@ -31,11 +31,19 @@ class Transaction:
 
     def start(self):
         """Start a transaction on this FileSystem"""
-        pass
+        if self.fs._intrans:
+            raise ValueError("Nested transactions not supported")
+        self.fs._intrans = True
+        self.fs._transaction = self
 
     def complete(self, commit=True):
         """Finish transaction: commit or discard all deferred files"""
-        pass
+        while self.files:
+            f = self.files.popleft()
+            if commit:
+                f.commit()
+            else:
+                f.discard()
 
 class FileActor:
 
@@ -57,4 +65,15 @@ class DaskTransaction(Transaction):
 
     def complete(self, commit=True):
         """Finish transaction: commit or discard all deferred files"""
-        pass
+        import distributed
+        client = distributed.default_client()
+        
+        def process_files(files, commit):
+            for f in files:
+                if commit:
+                    f.commit()
+                else:
+                    f.discard()
+            return []
+
+        client.submit(process_files, self.files, commit, actor=self.files).result()
