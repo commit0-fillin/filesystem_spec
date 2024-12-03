@@ -35,7 +35,8 @@ class Callback:
 
     def close(self):
         """Close callback."""
-        pass
+        if hasattr(self, 'tqdm') and self.tqdm is not None:
+            self.tqdm.close()
 
     def branched(self, path_1, path_2, **kwargs):
         """
@@ -66,13 +67,20 @@ class Callback:
         callback: Callback
             A callback instance to be passed to the child method
         """
-        pass
+        new_kwargs = kwargs.copy()
+        self.branch(path_1, path_2, new_kwargs)
+        return new_kwargs.get('callback', self.__class__())
 
     def branch_coro(self, fn):
         """
         Wraps a coroutine, and pass a new child callback to it.
         """
-        pass
+        @wraps(fn)
+        async def wrapper(*args, **kwargs):
+            new_callback = self.__class__()
+            kwargs['callback'] = new_callback
+            return await fn(*args, **kwargs)
+        return wrapper
 
     def set_size(self, size):
         """
@@ -85,7 +93,8 @@ class Callback:
         ----------
         size: int
         """
-        pass
+        self.size = size
+        self.call()
 
     def absolute_update(self, value):
         """
@@ -97,7 +106,8 @@ class Callback:
         ----------
         value: int
         """
-        pass
+        self.value = value
+        self.call()
 
     def relative_update(self, inc=1):
         """
@@ -109,7 +119,8 @@ class Callback:
         ----------
         inc: int
         """
-        pass
+        self.value += inc
+        self.call()
 
     def call(self, hook_name=None, **kwargs):
         """
@@ -123,7 +134,11 @@ class Callback:
             If given, execute on this hook
         kwargs: passed on to (all) hook(s)
         """
-        pass
+        if hook_name is not None and hook_name in self.hooks:
+            self.hooks[hook_name](self.size, self.value, **kwargs)
+        else:
+            for hook in self.hooks.values():
+                hook(self.size, self.value, **kwargs)
 
     def wrap(self, iterable):
         """
@@ -134,7 +149,9 @@ class Callback:
         iterable: Iterable
             The iterable that is being wrapped
         """
-        pass
+        for item in iterable:
+            yield item
+            self.relative_update()
 
     def branch(self, path_1, path_2, kwargs):
         """
@@ -158,7 +175,7 @@ class Callback:
         -------
 
         """
-        pass
+        kwargs['callback'] = self.__class__()
 
     def __getattr__(self, item):
         """
@@ -174,7 +191,12 @@ class Callback:
         ``NoOpCallback``. This is an alternative to including
         ``callback=DEFAULT_CALLBACK`` directly in a method signature.
         """
-        pass
+        if maybe_callback is None:
+            return DEFAULT_CALLBACK
+        elif isinstance(maybe_callback, Callback):
+            return maybe_callback
+        else:
+            return cls(hooks=maybe_callback)
 
 class NoOpCallback(Callback):
     """
@@ -195,11 +217,11 @@ class DotPrinterCallback(Callback):
 
     def branch(self, path_1, path_2, kwargs):
         """Mutate kwargs to add new instance with different print char"""
-        pass
+        kwargs['callback'] = DotPrinterCallback(chr_to_print='.')
 
     def call(self, **kwargs):
         """Just outputs a character"""
-        pass
+        print(self.chr, end='', flush=True)
 
 class TqdmCallback(Callback):
     """
