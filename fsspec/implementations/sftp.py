@@ -48,4 +48,17 @@ class SFTPFileSystem(AbstractFileSystem):
             If 0, no buffering, if 1, line buffering, if >1, buffer that many
             bytes, if None use default from paramiko.
         """
-        pass
+        path = self._strip_protocol(path)
+        
+        if 'r' in mode:
+            f = self.sftp.open(path, mode=mode)
+        else:
+            dir_path = self._parent(path)
+            if dir_path:
+                self.makedirs(dir_path, exist_ok=True)
+            f = self.sftp.open(path, mode=mode)
+        
+        if block_size is not None:
+            f.set_pipelined(block_size > 0)
+        
+        return f
