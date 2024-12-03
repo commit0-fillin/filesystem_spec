@@ -56,7 +56,15 @@ def run(fs, path, mount_point, foreground=True, threads=False, ready_file=False,
         to file.
 
     """
-    pass
+    fuse_ops = ops_class(fs, path, ready_file=ready_file)
+    fuse = FUSE(
+        fuse_ops,
+        mount_point,
+        foreground=foreground,
+        nothreads=not threads,
+        allow_other=True,
+    )
+    return fuse
 
 def main(args):
     """Mount filesystem from chained URL to MOUNT_POINT.
@@ -85,7 +93,38 @@ def main(args):
             -o 'ftp-username=anonymous' \\
             -o 'ftp-password=xieyanbo'
     """
-    pass
+    parser = argparse.ArgumentParser(description='Mount filesystem from chained URL to MOUNT_POINT.')
+    parser.add_argument('protocol', help='Filesystem protocol (e.g., memory, local, s3)')
+    parser.add_argument('path', help='Path on the remote filesystem')
+    parser.add_argument('mount_point', help='Local directory to mount the filesystem')
+    parser.add_argument('-f', '--foreground', action='store_true', help='Run in foreground')
+    parser.add_argument('-t', '--threads', action='store_true', help='Enable threading')
+    parser.add_argument('-l', '--log', help='Log file path')
+    parser.add_argument('-o', '--option', action='append', help='Additional options for the filesystem')
+    
+    args = parser.parse_args(args)
+    
+    # Set up logging
+    if args.log:
+        logging.basicConfig(filename=args.log, level=logging.INFO)
+    
+    # Parse additional options
+    options = {}
+    if args.option:
+        for opt in args.option:
+            key, value = opt.split('=', 1)
+            if value.endswith('[int]'):
+                options[key] = int(value[:-5])
+            elif value.endswith('[bool]'):
+                options[key] = value[:-6].lower() in ('true', 'yes', '1')
+            else:
+                options[key] = value
+    
+    # Create filesystem
+    fs = filesystem(args.protocol, **options)
+    
+    # Mount filesystem
+    run(fs, args.path, args.mount_point, foreground=args.foreground, threads=args.threads)
 if __name__ == '__main__':
     import sys
     main(sys.argv[1:])
