@@ -14,7 +14,18 @@ class FilesystemJSONEncoder(json.JSONEncoder):
         :func:`json.dumps` and :func:`json.dump`, without actually calling
         said functions.
         """
-        pass
+        if isinstance(obj, (str, int, float, bool, type(None))):
+            return obj
+        elif isinstance(obj, (list, tuple)):
+            return [self.make_serializable(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {str(key): self.make_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, set):
+            return [self.make_serializable(item) for item in sorted(obj)]
+        elif hasattr(obj, '__dict__'):
+            return self.make_serializable(obj.__dict__)
+        else:
+            return str(obj)
 
 class FilesystemJSONDecoder(json.JSONDecoder):
 
@@ -26,4 +37,11 @@ class FilesystemJSONDecoder(json.JSONDecoder):
         """
         Inverse function of :meth:`FilesystemJSONEncoder.make_serializable`.
         """
-        pass
+        if isinstance(obj, (str, int, float, bool, type(None))):
+            return obj
+        elif isinstance(obj, list):
+            return [self.unmake_serializable(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {key: self.unmake_serializable(value) for key, value in obj.items()}
+        else:
+            return obj
