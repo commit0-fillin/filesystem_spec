@@ -31,12 +31,48 @@ def filetexts(d, open=open, mode='t'):
     automatically switch to a temporary current directory, to avoid
     race conditions when running tests in parallel.
     """
-    pass
+    original_dir = os.getcwd()
+    with tempfile.TemporaryDirectory() as dirname:
+        os.chdir(dirname)
+        for filename, text in d.items():
+            with open(filename, 'w' + mode) as f:
+                f.write(text)
+        yield
+        os.chdir(original_dir)
 
 def test_urlpath_expand_read():
     """Make sure * is expanded in file paths when reading."""
-    pass
+    with filetexts(csv_files):
+        fn = sorted(csv_files)[0]
+        fs = LocalFileSystem()
+        files = open_files('./*.csv')
+        assert len(files) == 2
+        assert [f.path for f in files] == [os.path.abspath(p) for p in sorted(csv_files)]
+
+        with open_files('./*.csv') as f:
+            data = f[0].read()
+            assert data == csv_files[fn]
 
 def test_urlpath_expand_write():
     """Make sure * is expanded in file paths when writing."""
-    pass
+    tmpdir = tempfile.mkdtemp()
+    try:
+        fs = LocalFileSystem()
+        files = open_files(os.path.join(tmpdir, "temp*.txt"), mode='w')
+        assert len(files) == 1
+        assert files[0].path == os.path.join(tmpdir, 'temp0.txt')
+
+        files = open_files(os.path.join(tmpdir, "temp*.txt"), mode='w', num=2)
+        assert len(files) == 2
+        assert files[0].path == os.path.join(tmpdir, 'temp0.txt')
+        assert files[1].path == os.path.join(tmpdir, 'temp1.txt')
+
+        with open_files(os.path.join(tmpdir, "temp*.txt"), mode='w', num=2) as files:
+            for file, text in zip(files, ['test1', 'test2']):
+                file.write(text)
+
+        with open_files(os.path.join(tmpdir, "temp*.txt"), mode='r') as files:
+            assert files[0].read() == 'test1'
+            assert files[1].read() == 'test2'
+    finally:
+        shutil.rmtree(tmpdir)
